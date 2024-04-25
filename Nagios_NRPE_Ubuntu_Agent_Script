@@ -1,0 +1,133 @@
+#NRPE Installation and configuration script for Ubuntu Distro
+## REMEMBER TO CHANGE THE NAGIOS SERVER IP on line 67
+sudo apt update -y
+sleep 30s
+sudo apt install nagios-nrpe-server monitoring-plugins -y
+sleep 120s
+##Add Memory checks script
+sudo cat > /usr/lib/nagios/plugins/check_mem << 'EOL'
+if [ "$1" = "-w" ] && [ "$2" -gt "0" ] && [ "$3" = "-c" ] && [ "$4" -gt "0" ]; then
+    FreeM=`free -m`
+        memTotal_m=`echo "$FreeM" |grep Mem |awk '{print $2}'`
+        memUsed_m=`echo "$FreeM" |grep Mem |awk '{print $3}'`
+        memFree_m=`echo "$FreeM" |grep Mem |awk '{print $4}'`
+        memBuffer_m=`echo "$FreeM" |grep Mem |awk '{print $6}'`
+        memCache_m=`echo "$FreeM" |grep Mem |awk '{print $7}'`
+        memUsedPrc=`echo $((($memUsed_m*100)/$memTotal_m))||cut -d. -f1`
+        if [ "$memUsedPrc" -ge "$4" ]; then
+                echo "Memory: CRITICAL Total: $memTotal_m MB - Used: $memUsed_m MB - $memUsedPrc% used!|TOTAL=$memTotal_m MB;; USED=$memUsed_m MB;; FREE=$memFree_m MB;; CACHE=$memCache_m MB;; BUFFER=$memBuffer_m MB;;"
+                exit 2
+        elif [ "$memUsedPrc" -ge "$2" ]; then
+                echo "Memory: WARNING Total: $memTotal_m MB - Used: $memUsed_m MB - $memUsedPrc% used!|TOTAL=$memTotal_m MB;; USED=$memUsed_m MB;; FREE=$memFree_m MB;; CACHE=$memCache_m MB;; BUFFER=$memBuffer_m MB;;"
+                exit 1
+        else
+                echo "Memory: OK Total: $memTotal_m MB - Used: $memUsed_m MB - $memUsedPrc% used|TOTAL=$memTotal_m MB;; USED=$memUsed_m MB;; FREE=$memFree_m MB;; CACHE=$memCache_m MB;; BUFFER=$memBuffer_m MB;;"
+                exit 0
+        fi
+else        # If inputs are not as expected, print help. 
+    sName="`echo $0|awk -F '/' '{print $NF}'`"
+        echo -e "\n\n\t\t### $sName Version 2.0###\n"
+        echo -e "# Usage:\t$sName -w <warnlevel> -c <critlevel>"
+        echo -e "\t\t= warnlevel and critlevel is percentage value without %\n"
+    echo "# EXAMPLE:\t/usr/lib64/nagios/plugins/$sName -w 80 -c 90"
+        echo -e "\nCopyright (C) 2012 Lukasz Gogolin (lukasz.gogolin@gmail.com), improved by Nestor 2015\n\n"
+        exit
+fi
+EOL
+sudo chmod +x /usr/lib/nagios/plugins/check_mem
+
+##Creating a customised configuration file
+
+sudo mv /etc/nagios/nrpe.cfg /etc/nagios/nrpe.cfg-$(date "+%Y.%m.%d.%H")
+sudo cat > /etc/nagios/nrpe.cfg << 'EOL'
+# LOG FACILITY
+# The syslog facility that should be used for logging purposes.
+log_facility=daemon
+log_file=/var/log/nrpe.log
+
+debug=0
+
+# PID FILE
+pid_file=/run/nagios/nrpe.pid
+
+# PORT NUMBER
+
+server_port=5666
+
+# NRPE USER
+
+nrpe_user=nagios
+
+# NRPE GROUP
+
+nrpe_group=nagios
+
+# ALLOWED HOST ADDRESSES
+
+allowed_hosts=127.0.0.1,enter_nagios_server_IP_here
+
+dont_blame_nrpe=0
+
+# BASH COMMAND SUBSTITUTION
+allow_bash_command_substitution=0
+
+# COMMAND TIMEOUT
+command_timeout=60
+
+# CONNECTION TIMEOUT
+connection_timeout=300
+
+##Commands Definition
+command[check_users]=/usr/lib/nagios/plugins/check_users -w 5 -c 10
+command[check_load]=/usr/lib/nagios/plugins/check_load -w 20,15,10 -c 35,30,25
+command[check_disk]=/usr/lib/nagios/plugins/check_disk -w 20% -c 10% -p /
+command[check_swap]=/usr/lib/nagios/plugins/check_swap  -w 50 -c 30
+command[check_procs]=/usr/lib/nagios/plugins/check_procs -w 5 -c 10 -s 7
+command[check_mem]=/usr/lib/nagios/plugins/check_mem -w 85 -c 90
+command[check_disk_boot]=/usr/lib/nagios/plugins/check_disk -w 20% -c 10% -p /boot
+command[check_zombie_procs]=/usr/lib/nagios/plugins/check_procs -w 5 -c 10 -s Z
+command[check_home]=/usr/lib/nagios/plugins/check_disk -w 20% -c 10% -p /home
+command[check_total_procs]=/usr/lib/nagios/plugins/check_procs -w 175 -c 200
+EOL
+sleep 5s
+
+###Create a new nagios-nrpe-server.service file
+sudo mv /usr/lib/systemd/system/nagios-nrpe-server.service /usr/lib/systemd/system/nagios-nrpe-server.service-$(date "+%Y.%m.%d.%H")
+sudo cat > /usr/lib/systemd/system/nagios-nrpe-server.service << 'EOL'
+[Unit]
+Description=Nagios Remote Plugin Executor
+Documentation=http://www.nagios.org/documentation
+After=var-run.mount nss-lookup.target network.target local-fs.target remote-fs.target time-sync.target
+Before=getty@tty1.service plymouth-quit.service xdm.service
+Conflicts=nrpe.socket
+
+[Install]
+WantedBy=multi-user.target
+
+[Service]
+Type=simple
+Restart=on-abort
+PIDFile=/run/nagios/nrpe.pid
+EnvironmentFile=-/etc/default/nagios-nrpe-server
+ExecStart=/usr/sbin/nrpe -c /etc/nagios/nrpe.cfg -n -f $NRPE_OPTS
+ExecReload=/bin/kill -HUP $MAINPID
+ExecStopPost=/bin/rm -f /run/nagios/nrpe.pid
+TimeoutStopSec=60
+User=nagios
+Group=nagios
+PrivateTmp=true
+OOMScoreAdjust=-500
+EOL
+sleep 5s
+sudo systemctl daemon-reload
+##Starting NRPE Service
+sleep 3s
+sudo systemctl enable --now nagios-nrpe-server
+##While using UFW
+sudo ufw allow 5666/tcp
+##When using Firewalld
+#sudo firewall-cmd --add-port=5666/tcp --permanent
+#sudo firewall-cmd -reload
+sudo systemctl restart nagios-nrpe-server
+echo "Done with the installation NRPE Agent! on Ubuntu!"
+exit
